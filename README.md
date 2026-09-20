@@ -10,6 +10,8 @@ HOW TO USE
 2. Click "Load Tileset"
 3. Click "Randomize"
 4. Click "Save"
+5. Change the file format from .png to .gif
+6. Move the Randomized tileset to C:\Program Files (x86)\Steam\steamapps\common\The Escapists\Data\images\custom
 
 THE RANDOMIZER ONLY WORKS WITH TE1 TILESETS!
 
