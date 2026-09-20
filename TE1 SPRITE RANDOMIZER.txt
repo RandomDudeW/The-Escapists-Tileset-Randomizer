@@ -1,0 +1,307 @@
+#include <windows.h>
+#include <gdiplus.h>
+#include <shlobj.h>
+#include <commdlg.h>
+#include <string>
+#include <vector>
+#include <cstdlib>
+#include <algorithm>
+
+#pragma comment(lib, "gdiplus.lib")
+#pragma comment(lib, "comdlg32.lib")
+#pragma comment(lib, "shell32.lib")
+
+using namespace Gdiplus;
+
+const wchar_t* STEAM_PATH = L"C:\\Program Files (x86)\\Steam\\steamapps\\common\\The Escapists\\Data\\images\\custom";
+const int TILE_H = 16;
+const int SCALE = 2;
+const int MARGIN = 30;
+const int GAP = 60;
+const int BTN_W = 110;
+const int BTN_H = 30;
+const int BTN_Y = 15;
+const int BTN_GAP = 15;
+const int STATUS_Y = 55;
+const int LABEL_Y = 78;
+const int CANVAS_Y = 100;
+const int BOTTOM_MARGIN = 20;
+const int TITLEBAR_H = 35;
+const int WIN_W = 460;
+
+ULONG_PTR gdiplusToken;
+Image* g_original = nullptr;
+Image* g_result = nullptr;
+wchar_t g_originalName[260] = L"";
+HFONT g_font = nullptr;
+HFONT g_fontBold = nullptr;
+
+HWND g_hwnd;
+HWND g_btnLoad, g_btnRandom, g_btnSave;
+HWND g_labelBefore, g_labelAfter;
+HWND g_labelStatus;
+HWND g_canvasBefore, g_canvasAfter;
+
+void shuffleTiles(Image* src, Image** out) {
+    int w = (int)src->GetWidth();
+    int h = (int)src->GetHeight();
+    int rows = h / TILE_H;
+
+    std::vector<Bitmap*> tiles;
+    for (int i = 0; i < rows; i++) {
+        Bitmap* tile = new Bitmap(w, TILE_H, PixelFormat32bppARGB);
+        Graphics g(tile);
+        g.SetInterpolationMode(InterpolationModeNearestNeighbor);
+        g.DrawImage(src, Rect(0, 0, w, TILE_H), 0, i * TILE_H, w, TILE_H, UnitPixel);
+        tiles.push_back(tile);
+    }
+
+    for (int i = (int)tiles.size() - 1; i > 0; i--) {
+        int j = rand() % (i + 1);
+        std::swap(tiles[i], tiles[j]);
+    }
+
+    Bitmap* result = new Bitmap(w, h, PixelFormat32bppARGB);
+    {
+        Graphics g(result);
+        g.SetInterpolationMode(InterpolationModeNearestNeighbor);
+        for (int i = 0; i < (int)tiles.size(); i++) {
+            g.DrawImage(tiles[i], Rect(0, i * TILE_H, w, TILE_H));
+        }
+    }
+    *out = result;
+
+    for (auto t : tiles) delete t;
+}
+
+void layoutForImage(Image* img) {
+    if (!img) return;
+    int cw = (int)img->GetWidth() * SCALE;
+    int ch = (int)img->GetHeight() * SCALE;
+
+    int winH = TITLEBAR_H + CANVAS_Y + ch + BOTTOM_MARGIN;
+
+    SetWindowPos(g_hwnd, nullptr, 0, 0, WIN_W, winH, SWP_NOMOVE | SWP_NOZORDER);
+
+    int totalBtnW = BTN_W * 3 + BTN_GAP * 2;
+    int btnStartX = (WIN_W - totalBtnW) / 2;
+
+    SetWindowPos(g_btnLoad, nullptr, btnStartX, BTN_Y, BTN_W, BTN_H, SWP_NOZORDER);
+    SetWindowPos(g_btnRandom, nullptr, btnStartX + BTN_W + BTN_GAP, BTN_Y, BTN_W, BTN_H, SWP_NOZORDER);
+    SetWindowPos(g_btnSave, nullptr, btnStartX + (BTN_W + BTN_GAP) * 2, BTN_Y, BTN_W, BTN_H, SWP_NOZORDER);
+
+    SetWindowPos(g_labelStatus, nullptr, 0, STATUS_Y, WIN_W, 20, SWP_NOZORDER);
+
+    int x1 = MARGIN;
+    int x2 = WIN_W - MARGIN - cw - 10;
+
+    SetWindowPos(g_labelBefore, nullptr, x1, LABEL_Y, cw, 20, SWP_NOZORDER);
+    SetWindowPos(g_labelAfter, nullptr, x2, LABEL_Y, cw, 20, SWP_NOZORDER);
+    SetWindowPos(g_canvasBefore, nullptr, x1, CANVAS_Y, cw, ch, SWP_NOZORDER);
+    SetWindowPos(g_canvasAfter, nullptr, x2, CANVAS_Y, cw, ch, SWP_NOZORDER);
+}
+
+void loadTileset() {
+    wchar_t file[260] = L"";
+    OPENFILENAMEW ofn = {};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = g_hwnd;
+    ofn.lpstrFilter = L"GIF Files\0*.gif\0All Files\0*.*\0";
+    ofn.lpstrFile = file;
+    ofn.nMaxFile = 260;
+    ofn.lpstrInitialDir = STEAM_PATH;
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+
+    if (GetOpenFileNameW(&ofn)) {
+        if (g_original) delete g_original;
+        if (g_result) delete g_result;
+        g_original = Gdiplus::Image::FromFile(ofn.lpstrFile);
+        g_result = nullptr;
+
+        const wchar_t* slash = wcsrchr(file, L'\\');
+        if (slash) wcscpy_s(g_originalName, slash + 1);
+        else wcscpy_s(g_originalName, file);
+
+        layoutForImage(g_original);
+        InvalidateRect(g_canvasBefore, nullptr, TRUE);
+        InvalidateRect(g_canvasAfter, nullptr, TRUE);
+        SetWindowTextW(g_labelStatus, g_originalName);
+    }
+}
+
+void randomize() {
+    if (!g_original) {
+        MessageBoxW(g_hwnd, L"Load a tileset first!", L"Warning", MB_ICONWARNING);
+        return;
+    }
+    if (g_result) delete g_result;
+    shuffleTiles(g_original, &g_result);
+    InvalidateRect(g_canvasAfter, nullptr, TRUE);
+    SetWindowTextW(g_labelStatus, L"Randomized!");
+}
+
+void saveImage() {
+    if (!g_result) {
+        MessageBoxW(g_hwnd, L"Randomize first!", L"Warning", MB_ICONWARNING);
+        return;
+    }
+
+    wchar_t file[260] = L"";
+    wcscpy_s(file, g_originalName);
+
+    OPENFILENAMEW ofn = {};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = g_hwnd;
+    ofn.lpstrFilter = L"GIF Files\0*.gif\0";
+    ofn.lpstrFile = file;
+    ofn.nMaxFile = 260;
+    ofn.lpstrInitialDir = STEAM_PATH;
+    ofn.lpstrDefExt = L"gif";
+    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
+
+    if (GetSaveFileNameW(&ofn)) {
+        UINT count = 0;
+        UINT size = 0;
+        GetImageEncodersSize(&count, &size);
+        std::vector<ImageCodecInfo> encoders(count);
+        GetImageEncoders(count, size, encoders.data());
+        for (UINT i = 0; i < count; i++) {
+            if (wcscmp(encoders[i].MimeType, L"image/gif") == 0) {
+                g_result->Save(ofn.lpstrFile, &encoders[i].Clsid);
+                break;
+            }
+        }
+        wchar_t msg[300];
+        swprintf(msg, 300, L"Saved to:\n%s", ofn.lpstrFile);
+        MessageBoxW(g_hwnd, msg, L"Saved", MB_ICONINFORMATION);
+    }
+}
+
+LRESULT CALLBACK CanvasProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (msg == WM_PAINT) {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hwnd, &ps);
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+
+        HBRUSH white = CreateSolidBrush(RGB(255, 255, 255));
+        FillRect(hdc, &rc, white);
+        DeleteObject(white);
+
+        Image* img = (hwnd == g_canvasBefore) ? g_original : g_result;
+        if (img) {
+            int w = (int)img->GetWidth() * SCALE;
+            int h = (int)img->GetHeight() * SCALE;
+            Graphics g(hdc);
+            g.SetInterpolationMode(InterpolationModeNearestNeighbor);
+            g.DrawImage(img, Rect(0, 0, w, h));
+        }
+
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_CREATE: {
+        g_font = CreateFontW(-13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+        g_fontBold = CreateFontW(-13, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+
+        int totalBtnW = BTN_W * 3 + BTN_GAP * 2;
+        int btnStartX = (WIN_W - totalBtnW) / 2;
+
+        g_btnLoad = CreateWindowW(L"BUTTON", L"Load Tileset", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            btnStartX, BTN_Y, BTN_W, BTN_H, hwnd, (HMENU)1, nullptr, nullptr);
+        g_btnRandom = CreateWindowW(L"BUTTON", L"Randomize", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            btnStartX + BTN_W + BTN_GAP, BTN_Y, BTN_W, BTN_H, hwnd, (HMENU)2, nullptr, nullptr);
+        g_btnSave = CreateWindowW(L"BUTTON", L"Save", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            btnStartX + (BTN_W + BTN_GAP) * 2, BTN_Y, BTN_W, BTN_H, hwnd, (HMENU)3, nullptr, nullptr);
+
+        g_labelStatus = CreateWindowW(L"STATIC", L"Load a tileset to begin",
+            WS_CHILD | WS_VISIBLE | SS_CENTER,
+            0, STATUS_Y, WIN_W, 20, hwnd, nullptr, nullptr, nullptr);
+
+        g_labelBefore = CreateWindowW(L"STATIC", L"BEFORE", WS_CHILD | WS_VISIBLE | SS_CENTER,
+            MARGIN, LABEL_Y, 150, 20, hwnd, nullptr, nullptr, nullptr);
+        g_labelAfter = CreateWindowW(L"STATIC", L"AFTER", WS_CHILD | WS_VISIBLE | SS_CENTER,
+            WIN_W - MARGIN - 150, LABEL_Y, 150, 20, hwnd, nullptr, nullptr, nullptr);
+
+        WNDCLASSEXW wc = {};
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = CanvasProc;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+        wc.lpszClassName = L"TilesetCanvas";
+        RegisterClassExW(&wc);
+
+        g_canvasBefore = CreateWindowExW(WS_EX_CLIENTEDGE, L"TilesetCanvas", L"",
+            WS_CHILD | WS_VISIBLE, MARGIN, CANVAS_Y, 150, 150, hwnd, nullptr, nullptr, nullptr);
+        g_canvasAfter = CreateWindowExW(WS_EX_CLIENTEDGE, L"TilesetCanvas", L"",
+            WS_CHILD | WS_VISIBLE, WIN_W - MARGIN - 150, CANVAS_Y, 150, 150, hwnd, nullptr, nullptr, nullptr);
+
+        SendMessageW(g_btnLoad, WM_SETFONT, (WPARAM)g_font, TRUE);
+        SendMessageW(g_btnRandom, WM_SETFONT, (WPARAM)g_font, TRUE);
+        SendMessageW(g_btnSave, WM_SETFONT, (WPARAM)g_font, TRUE);
+        SendMessageW(g_labelStatus, WM_SETFONT, (WPARAM)g_font, TRUE);
+        SendMessageW(g_labelBefore, WM_SETFONT, (WPARAM)g_fontBold, TRUE);
+        SendMessageW(g_labelAfter, WM_SETFONT, (WPARAM)g_fontBold, TRUE);
+
+        return 0;
+    }
+    case WM_COMMAND:
+        switch (LOWORD(wParam)) {
+        case 1: loadTileset(); return 0;
+        case 2: randomize(); return 0;
+        case 3: saveImage(); return 0;
+        }
+        break;
+    case WM_DESTROY:
+        if (g_original) delete g_original;
+        if (g_result) delete g_result;
+        if (g_font) DeleteObject(g_font);
+        if (g_fontBold) DeleteObject(g_fontBold);
+        GdiplusShutdown(gdiplusToken);
+        PostQuitMessage(0);
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrev, LPSTR lpCmd, int nCmdShow) {
+    srand(GetTickCount());
+
+    GdiplusStartupInput input;
+    GdiplusStartup(&gdiplusToken, &input, nullptr);
+
+    WNDCLASSEXW wc = {};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = WndProc;
+    wc.hInstance = hInstance;
+    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    wc.lpszClassName = L"TE1TilesetRandomizer";
+    wc.hIcon = (HICON)LoadImageW(hInstance, MAKEINTRESOURCEW(1), IMAGE_ICON, 32, 32, 0);
+    wc.hIconSm = (HICON)LoadImageW(hInstance, MAKEINTRESOURCEW(1), IMAGE_ICON, 16, 16, 0);
+    RegisterClassExW(&wc);
+
+    g_hwnd = CreateWindowW(L"TE1TilesetRandomizer", L"TE1 TILESET RANDOMIZER",
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+        CW_USEDEFAULT, CW_USEDEFAULT, WIN_W, 300,
+        nullptr, nullptr, hInstance, nullptr);
+
+    ShowWindow(g_hwnd, nCmdShow);
+    UpdateWindow(g_hwnd);
+
+    MSG msg;
+    while (GetMessageW(&msg, nullptr, 0, 0)) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+    return 0;
+}   
